@@ -1,6 +1,7 @@
 # src/download_threads.py
 import os
 import threading
+import shutil
 import yt_dlp
 from .video_info import VideoInfo
 from .translations import get_text
@@ -43,6 +44,9 @@ class InfoThread(threading.Thread):
 
 # ======================== DOWNLOAD THREAD =============================
 class DownloadThread(threading.Thread):
+    _used_filenames = set()
+    _lock = threading.Lock()
+
     def __init__(self, url, app, download_type, resolution, bitrate, audio_format, output_path,
                  progress_callback=None, status_callback=None, finished_callback=None):
         """
@@ -114,49 +118,64 @@ class DownloadThread(threading.Thread):
             if self.status_callback:
                 self.status_callback(get_text("processing_file", self.app.current_language))
 
+    # ----- Génération de nom unique après téléchargement -----
+    def get_unique_basename(self, base_name, ext):
+        with self._lock:
+            candidate = base_name
+            counter = 1
+
+            full_path = os.path.join(self.output_path, f"{candidate}.{ext}")
+
+            while (
+                    os.path.exists(full_path)
+                    or f"{candidate}.{ext}" in self._used_filenames
+            ):
+                candidate = f"{base_name} ({counter})"
+                full_path = os.path.join(self.output_path, f"{candidate}.{ext}")
+                counter += 1
+
+            # réserver le nom pour les autres threads
+            self._used_filenames.add(f"{candidate}.{ext}")
+
+            return candidate
+
     # ----- Exécution -----
     def run(self):
         try:
+            # Récupérer le titre avant de construire ydl_opts
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(self.url, download=False)
+                title = info.get('title', 'video')
+                ext = 'mp4' if self.download_type == 'video' else ('mp3' if self.audio_format == 'mp3' else 'm4a')
+
+                unique_title = self.get_unique_basename(title, ext)
+
+            # Déterminer l'extension et générer un nom unique
+            ext = 'mp4' if self.download_type == 'video' else ('mp3' if self.audio_format == 'mp3' else 'm4a')
+
             # ---------- Construction des options yt-dlp ----------
 
             # ----- VIDEO + AUDIO -----
 
+            # Options yt-dlp (laisser yt-dlp gérer le .part)
             if self.download_type == "video":
-
-                # Nettoyage "1080p" -> "1080"
-                if self.resolution is None:
-                    height = None
-                else:
-                    height = self.resolution[:-1]
-
-                # Format vidéo : télécharge directement à la résolution demandée
+                height = self.resolution[:-1] if self.resolution else None
+                format_str = f"bestvideo[ext=mp4]"
                 if height:
-                    format_str = f'bestvideo[height<={height}][ext=mp4]'
+                    format_str = f"bestvideo[height<={height}][ext=mp4]"
+                if self.bitrate:
+                    br = int(self.bitrate.replace(" kbps", ""))
+                    format_str += f"+bestaudio[abr>={br-10}][abr<={br+10}][ext=m4a]/bestaudio[ext=m4a]"
                 else:
-                    format_str = f'bestvideo[ext=mp4]'
-
-                # Audio : si bitrate choisi par l'utilisateur
-                if self.bitrate is None:
-                    # Best audio (AAC / m4a de préférence)
-                    format_str += '+bestaudio[ext=m4a]/bestaudio'
-                else:
-                    bitrate_val = int(self.bitrate.replace(" kbps", ""))
-                    low = bitrate_val - 10
-                    high = bitrate_val + 10
-
-                    format_str += (  # += AJOUTE à format_str
-                        f'+bestaudio[abr>={low}][abr<={high}][ext=m4a]'
-                        f'/bestaudio[ext=m4a]'
-                    )
-
+                    format_str += "+bestaudio[ext=m4a]"
                 ydl_opts = {
                     'format': format_str + '/best',
-                    'outtmpl': os.path.join(self.output_path, '%(title)s.%(ext)s'),
-                    'progress_hooks': [self.progress_hook],  # permet de suivre l'avancement du téléchargement
+                    'outtmpl': os.path.join(self.output_path, f"{unique_title}.%(ext)s"),  # Ne pas mettre de (1), (2) ici
+                    'progress_hooks': [self.progress_hook],
                     'quiet': True,
                     'no_warnings': True,
                     'merge_output_format': 'mp4',
-                    'nooverwrites': True  # évite d'écraser accidentellement des fichiers existants
+                    'nooverwrites': False
                 }
 
             # ----- AUDIO ONLY -----
@@ -164,35 +183,26 @@ class DownloadThread(threading.Thread):
             else:
 
                 # ----- M4A (pas de conversion) -----
-                if self.audio_format == "m4a":
-
-                    if self.bitrate is None:
-                        audio_format = 'bestaudio[ext=m4a]'
-                    else:
+                if self.audio_format == 'm4a':
+                    audio_fmt = 'bestaudio[ext=m4a]'
+                    if self.bitrate:
                         br = int(self.bitrate.replace(" kbps", ""))
-                        audio_format = (
-                            f'bestaudio[abr>={br - 10}][abr<={br + 10}][ext=m4a]'
-                            f'/bestaudio[ext=m4a]'
-                        )
-
+                        audio_fmt = f'bestaudio[abr>={br-10}][abr<={br+10}][ext=m4a]/bestaudio[ext=m4a]'
                     ydl_opts = {
-                        'format': audio_format,
-                        'outtmpl': os.path.join(self.output_path, '%(title)s.%(ext)s'),
+                        'format': audio_fmt,
+                        'outtmpl': os.path.join(self.output_path, f"{unique_title}.%(ext)s"),
                         'progress_hooks': [self.progress_hook],
                         'quiet': True,
                         'no_warnings': True,
-                        'nooverwrites': True
+                        'nooverwrites': False
                     }
 
                 # ----- MP3 (conversion volontaire) -----
                 else:
-                    preferred_quality = (
-                        self.bitrate.replace(" kbps", "") if self.bitrate else '0'
-                    )
-
+                    preferred_quality = self.bitrate.replace(" kbps", "") if self.bitrate else '192'
                     ydl_opts = {
                         'format': 'bestaudio[ext=m4a]/bestaudio',
-                        'outtmpl': os.path.join(self.output_path, '%(title)s.%(ext)s'),
+                        'outtmpl': os.path.join(self.output_path, f"{unique_title}.%(ext)s"),
                         'progress_hooks': [self.progress_hook],
                         'postprocessors': [{
                             'key': 'FFmpegExtractAudio',
@@ -201,7 +211,7 @@ class DownloadThread(threading.Thread):
                         }],
                         'quiet': True,
                         'no_warnings': True,
-                        'nooverwrites': True
+                        'nooverwrites': False
                     }
 
             # ---------- Téléchargement ----------
@@ -211,7 +221,6 @@ class DownloadThread(threading.Thread):
 
             if self.status_callback:
                 self.status_callback(get_text("download_complete", self.app.current_language))
-
             if self.finished_callback:
                 self.finished_callback(True)
 
@@ -299,6 +308,51 @@ class BatchDownloadThread(threading.Thread):
         successful = 0
 
         try:
+            # ==========================================================
+            # 🆕 1. RÉCUPÉRATION DES TITRES AVANT DOWNLOAD
+            # ==========================================================
+            titles = []
+
+            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                for url in self.urls:
+                    url = url.strip()
+                    if not url:
+                        titles.append("video")
+                        continue
+
+                    try:
+                        info = ydl.extract_info(url, download=False)
+                        titles.append(info.get("title", "video"))
+                    except Exception:
+                        titles.append("video")
+
+            # ==========================================================
+            # 🆕 2. DÉTECTION DES DOUBLONS
+            # ==========================================================
+            from collections import Counter
+
+            counts = Counter(titles)
+
+            # ==========================================================
+            # 🆕 3. GÉNÉRATION DES NOMS UNIQUES
+            # ==========================================================
+            used = {}
+            final_titles = []
+
+            for title in titles:
+                if counts[title] == 1:
+                    # 👉 PAS DE DOUBLON → nom normal
+                    final_titles.append(title)
+                else:
+                    # 👉 DOUBLON → toujours numéroter
+                    index = used.get(title, 0) + 1
+                    used[title] = index
+
+                    final_titles.append(f"{title} ({index})")
+
+            # ==========================================================
+            # 🔁 BOUCLE PRINCIPALE
+            # ==========================================================
             for i, raw_url in enumerate(self.urls):
                 if self.is_cancelled:
                     raise DownloadCancelled()
@@ -310,6 +364,9 @@ class BatchDownloadThread(threading.Thread):
                 # Variables pour ce téléchargement
                 video_index = i + 1
                 video_title_ref = ["Chargement..."]
+
+                # NOM FORCÉ
+                forced_title = final_titles[i]
 
                 # Statut initial
                 if self.status_callback:
@@ -328,7 +385,7 @@ class BatchDownloadThread(threading.Thread):
                 )
 
                 # --------------------------------------------------
-                # Options yt-dlp
+                # OPTIONS yt-dlp
                 # --------------------------------------------------
 
                 if self.download_type == "video":
@@ -338,7 +395,8 @@ class BatchDownloadThread(threading.Thread):
                         ydl_opts = {
                             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
                             "outtmpl": os.path.join(
-                                self.output_path, "%(title)s.%(ext)s"
+                            self.output_path,
+                            f"{forced_title}.%(ext)s"
                             ),
                             "progress_hooks": [progress_hook],
                             "quiet": True,
@@ -371,7 +429,8 @@ class BatchDownloadThread(threading.Thread):
                         ydl_opts = {
                             "format": format_str + "/best",
                             "outtmpl": os.path.join(
-                                self.output_path, "%(title)s.%(ext)s"
+                            self.output_path,
+                            f"{forced_title}.%(ext)s"
                             ),
                             "progress_hooks": [progress_hook],
                             "quiet": True,
@@ -390,7 +449,8 @@ class BatchDownloadThread(threading.Thread):
                     ydl_opts = {
                         "format": "bestaudio[ext=m4a]/bestaudio",
                         "outtmpl": os.path.join(
-                            self.output_path, "%(title)s.%(ext)s"
+                        self.output_path,
+                        f"{forced_title}.%(ext)s"
                         ),
                         "progress_hooks": [progress_hook],
                         "postprocessors": [{
@@ -404,7 +464,7 @@ class BatchDownloadThread(threading.Thread):
                     }
 
                 # --------------------------------------------------
-                # Téléchargement
+                # TÉLÉCHARGEMENT
                 # --------------------------------------------------
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -429,7 +489,7 @@ class BatchDownloadThread(threading.Thread):
                 successful += 1
 
             # --------------------------------------------------
-            # Fin normale
+            # FIN NORMALE
             # --------------------------------------------------
             if self.status_callback:
                 self.status_callback(
@@ -440,7 +500,7 @@ class BatchDownloadThread(threading.Thread):
                 self.finished_callback(successful, self.total_count)
 
             # ------------------------------------------------------
-            # Annulation
+            # ANNULATION
             # ------------------------------------------------------
         except DownloadCancelled:
             if self.status_callback:
@@ -451,7 +511,7 @@ class BatchDownloadThread(threading.Thread):
                 self.finished_callback(successful, self.total_count)
 
             # ------------------------------------------------------
-            # Erreur réelle
+            # ERREUR RÉELLE
             # ------------------------------------------------------
         except Exception as e:
             if self.status_callback:

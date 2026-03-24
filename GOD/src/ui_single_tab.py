@@ -402,6 +402,7 @@ class VideoItemFrame(ctk.CTkFrame):
         self.radio_audio.configure(text=get_text("audio_only_option", self.app.current_language))
         self.resolution_label.configure(text=get_text("resolution_label", self.app.current_language))
         self.bitrate_label.configure(text=get_text("audio_bitrate_label", self.app.current_language))
+        self.audio_format_label.configure(text=get_text("audio_format_label", self.app.current_language))
 
     def show_info(self):
         """Affiche les infos détaillées dans une popup. Utilise get_detailed_summary() si disponible."""

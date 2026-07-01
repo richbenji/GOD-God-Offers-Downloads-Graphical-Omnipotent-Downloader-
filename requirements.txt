@@ -1,0 +1,14 @@
+certifi==2026.6.17
+charset-normalizer==3.4.7
+customtkinter==6.0.0
+darkdetect==0.8.0
+idna==3.18
+Markdown==3.10.2
+packaging==26.2
+pillow==12.2.0
+requests==2.34.2
+tabulate==0.10.0
+tkinterweb==4.25.3
+tkinterweb-tkhtml==2.1.1
+urllib3==2.7.0
+yt-dlp==2026.6.9

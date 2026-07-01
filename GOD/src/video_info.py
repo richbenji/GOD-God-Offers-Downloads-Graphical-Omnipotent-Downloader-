@@ -22,7 +22,7 @@ class VideoInfo:
         self.audio_bitrates = []
         self.is_valid = False
 
-    def fetch_info(self):
+    def fetch_info(self, cookies_path=None):
         """Récupère toutes les infos de la vidéo via yt_dlp"""
 
         if not self.url or not isinstance(self.url, str):
@@ -50,6 +50,11 @@ class VideoInfo:
                 # maintenue à jour par les devs de yt-dlp ; un client
                 # codé en dur ici deviendrait vite obsolète.
             }
+            if cookies_path:
+                # Nécessaire pour les vidéos privées, non répertoriées,
+                # ou avec restriction d'âge ("Sign in to confirm your age").
+                ydl_opts["cookiefile"] = cookies_path
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
 
@@ -78,7 +83,14 @@ class VideoInfo:
                 self.is_valid = True
                 return True
         except Exception as e:
-            raise VideoInfoFetchError() from e
+            msg = str(e).lower()
+            # Vidéo privée, non répertoriée, ou avec restriction d'âge :
+            # on réutilise la même clé "playlist_private" que pour les
+            # playlists, ce qui déclenche déjà le popup de demande de
+            # cookies existant côté UI.
+            if any(k in msg for k in ("sign in", "age", "private", "login", "cookies")):
+                raise VideoInfoFetchError("playlist_private") from e
+            raise VideoInfoFetchError("fetching_impossible") from e
 
     def get_detailed_summary(self):
         """Retourne un résumé détaillé avec un tableau des formats."""

@@ -902,18 +902,7 @@ class SingleDownloadTab:
             else:
                 video_loading_frame.pack(fill="x", pady=5)
 
-            thread = InfoThread(
-                video_url,
-                self.app,
-                callback=lambda info, lf=video_loading_frame: self.app.after(
-                    0, lambda i=info, f=lf: self.on_info_received(i, f)
-                ),
-                error_callback=lambda err, lf=video_loading_frame: self.app.after(
-                    0, lambda e=err, f=lf: self.on_info_error(e, f)
-                )
-            )
-            thread.daemon = True
-            thread.start()
+            self._start_info_thread(video_url, video_loading_frame)
 
         self.check_url_btn.configure(state="normal")
 
@@ -932,6 +921,22 @@ class SingleDownloadTab:
                 ).format(count=count)
             )
         )
+
+    def _start_info_thread(self, video_url, loading_frame):
+        """Lance (ou relance après ajout de cookies) un InfoThread pour une URL donnée."""
+        thread = InfoThread(
+            video_url,
+            self.app,
+            cookies_path=self.app.cookies_path,
+            callback=lambda info, lf=loading_frame: self.app.after(
+                0, lambda i=info, f=lf: self.on_info_received(i, f)
+            ),
+            error_callback=lambda err_key, lf=loading_frame, u=video_url: self.app.after(
+                0, lambda e=err_key, f=lf, uu=u: self.on_info_error(e, f, uu)
+            )
+        )
+        thread.daemon = True
+        thread.start()
 
     def _on_extraction_error(self, message_key, loading_frame):
         loading_frame.stop()
@@ -1001,7 +1006,8 @@ class SingleDownloadTab:
 
             except UrlResolveError as err:
 
-                # 🔐 Playlist privée sans cookies → demander cookies.txt
+                # 🔐 Vidéo/playlist privée ou avec restriction d'âge,
+                # sans cookies fournis → demander cookies.txt
                 if err.message_key == "playlist_private" and not self.app.cookies_path:
 
                     def ask_cookie_and_retry():
@@ -1081,9 +1087,38 @@ class SingleDownloadTab:
 
         self.refresh_download_button()
 
-    def on_info_error(self, error, loading_frame):
-        """Appelé quand la récupération des infos d'une vidéo échoue."""
+    def on_info_error(self, error_key, loading_frame, url=None):
+        """Appelé quand la récupération des infos d'une vidéo échoue.
 
+        error_key est une clé brute (ex: "playlist_private",
+        "fetching_impossible") — pas encore traduite — pour qu'on
+        puisse proposer un formulaire de cookies si nécessaire, avant
+        de retomber sur le message d'erreur générique traduit.
+        """
+
+        # 🔐 Vidéo privée / restriction d'âge, sans cookies fournis
+        # → proposer le même popup que pour les playlists privées,
+        # puis relancer automatiquement la récupération des infos.
+        if error_key == "playlist_private" and not self.app.cookies_path and url:
+
+            def ask_cookie_and_retry():
+                path = ask_cookies_file(self.app.current_language)
+                if path:
+                    self.app.cookies_path = update_cookies_path(path)
+                    # On relance directement un nouvel InfoThread avec
+                    # les cookies, en réutilisant le même loader.
+                    self._start_info_thread(url, loading_frame)
+                    return
+
+                # Utilisateur a annulé → afficher l'erreur normale
+                self._show_info_error(error_key, loading_frame)
+
+            self.app.after(0, ask_cookie_and_retry)
+            return
+
+        self._show_info_error(error_key, loading_frame)
+
+    def _show_info_error(self, error_key, loading_frame):
         loading_frame.stop()
         self.check_url_btn.configure(state="normal")
 
@@ -1093,7 +1128,7 @@ class SingleDownloadTab:
 
         messagebox.showerror(
             get_text("error", self.app.current_language),
-            f"{get_text('error_prefix', self.app.current_language)} {error}"
+            f"{get_text('error_prefix', self.app.current_language)} {get_text(error_key, self.app.current_language)}"
         )
 
     # ---------------- vider la queue ----------------
@@ -1234,7 +1269,8 @@ class SingleDownloadTab:
                     total_videos,
                     opts["title"]
                 ),
-                finished_callback=make_finished_cb(tref)
+                finished_callback=make_finished_cb(tref),
+                cookies_path=self.app.cookies_path
             )
 
             tref['t'] = thread

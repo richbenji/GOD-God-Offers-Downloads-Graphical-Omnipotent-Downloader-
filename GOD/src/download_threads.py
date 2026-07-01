@@ -5,6 +5,7 @@ import shutil
 import yt_dlp
 from .video_info import VideoInfo
 from .translations import get_text
+from .errors import VideoInfoFetchError
 
 # ------------ Exception spéciale pour une annulation propre ------------
 class DownloadCancelled(Exception):
@@ -33,10 +34,11 @@ class InfoThread(threading.Thread):
     L'URL est supposée valide (déjà vérifiée par resolve_url).
     """
 
-    def __init__(self, url, app, callback=None, error_callback=None):
+    def __init__(self, url, app, cookies_path=None, callback=None, error_callback=None):
         super().__init__()
         self.url = url
         self.app = app
+        self.cookies_path = cookies_path
         self.callback = callback
         self.error_callback = error_callback
         self.daemon = True
@@ -44,17 +46,22 @@ class InfoThread(threading.Thread):
     def run(self):
         try:
             info = VideoInfo(self.url)
-            info.fetch_info()
+            info.fetch_info(cookies_path=self.cookies_path)
 
             if self.callback:
                 self.callback(info)
 
+        except VideoInfoFetchError as e:
+            # On relaie la vraie clé (ex: "playlist_private" pour une
+            # vidéo privée/avec restriction d'âge) afin que l'UI puisse
+            # proposer de fournir des cookies, comme pour les playlists.
+            if self.error_callback:
+                self.error_callback(e.message_key)
+
         except Exception:
             # Erreur technique uniquement (yt-dlp, réseau, etc.)
             if self.error_callback:
-                self.error_callback(
-                    get_text("fetching_impossible", self.app.current_language)
-                )
+                self.error_callback("fetching_impossible")
 
 # ======================== DOWNLOAD THREAD =============================
 class DownloadThread(threading.Thread):
@@ -62,7 +69,8 @@ class DownloadThread(threading.Thread):
     _lock = threading.Lock()
 
     def __init__(self, url, app, download_type, resolution, bitrate, audio_format, output_path,
-                 progress_callback=None, status_callback=None, finished_callback=None):
+                 progress_callback=None, status_callback=None, finished_callback=None,
+                 cookies_path=None):
         """
         Thread qui télécharge soit :
             - une vidéo + audio (download_type = 'video')
@@ -71,6 +79,8 @@ class DownloadThread(threading.Thread):
         progress_callback  : fonction appelée à chaque mise à jour du pourcentage
         status_callback    : fonction appelée pour afficher un texte de statut (vitesse, ETA…)
         finished_callback  : fonction appelée lorsqu'un téléchargement se termine
+        cookies_path       : chemin vers un cookies.txt, nécessaire pour les vidéos
+                              privées ou avec restriction d'âge
         """
 
         super().__init__()
@@ -81,6 +91,7 @@ class DownloadThread(threading.Thread):
         self.bitrate = bitrate
         self.audio_format = audio_format
         self.output_path = output_path
+        self.cookies_path = cookies_path
 
         self.progress_callback = progress_callback
         self.status_callback = status_callback
@@ -171,6 +182,9 @@ class DownloadThread(threading.Thread):
                 'ignore_no_formats_error': True,
                 'extractor_args': YOUTUBE_EXTRACTOR_ARGS,
             }
+            if self.cookies_path:
+                title_fetch_opts['cookiefile'] = self.cookies_path
+
             with yt_dlp.YoutubeDL(title_fetch_opts) as ydl:
                 info = ydl.extract_info(self.url, download=False)
                 title = info.get('title', 'video')
@@ -258,6 +272,9 @@ class DownloadThread(threading.Thread):
                     }
 
             # ---------- Téléchargement ----------
+            if self.cookies_path:
+                ydl_opts['cookiefile'] = self.cookies_path
+
             # Lancement réel du téléchargement
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([self.url])
@@ -288,7 +305,8 @@ class DownloadThread(threading.Thread):
 # ========================= BATCH DOWNLOAD THREAD ========================
 class BatchDownloadThread(threading.Thread):
     def __init__(self, urls, app, download_type, resolution, bitrate, output_path,
-                 progress_callback=None, status_callback=None, finished_callback=None):
+                 progress_callback=None, status_callback=None, finished_callback=None,
+                 cookies_path=None):
         super().__init__()
         self.urls = urls
         self.app = app
@@ -299,6 +317,7 @@ class BatchDownloadThread(threading.Thread):
         self.progress_callback = progress_callback
         self.status_callback = status_callback
         self.finished_callback = finished_callback
+        self.cookies_path = cookies_path
 
         self.is_cancelled = False
         self.daemon = True
@@ -362,6 +381,9 @@ class BatchDownloadThread(threading.Thread):
                 'ignore_no_formats_error': True,
                 'extractor_args': YOUTUBE_EXTRACTOR_ARGS,
             }
+            if self.cookies_path:
+                title_fetch_opts['cookiefile'] = self.cookies_path
+
             with yt_dlp.YoutubeDL(title_fetch_opts) as ydl:
                 for url in self.urls:
                     url = url.strip()
@@ -535,6 +557,8 @@ class BatchDownloadThread(threading.Thread):
                 # --------------------------------------------------
                 # TÉLÉCHARGEMENT
                 # --------------------------------------------------
+                if self.cookies_path:
+                    ydl_opts["cookiefile"] = self.cookies_path
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     # Récupérer le titre de la vidéo avant téléchargement

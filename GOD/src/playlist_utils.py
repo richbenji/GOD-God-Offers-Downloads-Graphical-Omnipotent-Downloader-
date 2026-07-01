@@ -21,32 +21,42 @@ def extract_playlist_entries(url, cookies_path=None):
         "skip_download": True,
         "no_warnings": True,
         "ignoreerrors": False,
-        # ⚠️ On NE force PAS de player_client ici non plus : yt-dlp
-        # choisit lui-même les clients à essayer en interne. En mode
-        # extract_flat, ça n'a de toute façon pas d'impact direct
-        # puisqu'aucun format n'est résolu à ce stade.
     }
 
     strategies = [
-        # 1) Tentative SANS cookies (cas normal, la grande majorité des cas).
-        #    ⚠️ On ne force plus "cookiesfrombrowser": ("firefox",) ici :
-        #    si Firefox n'est pas installé, ou que son profil cookies
-        #    n'est pas accessible, yt-dlp levait une exception et CETTE
-        #    étape échouait systématiquement, même pour une vidéo
-        #    publique tout à fait normale.
+        # 1) SANS cookies — cas normal, la grande majorité des vidéos
+        #    et playlists publiques. On essaie toujours ça en premier
+        #    pour ne JAMAIS dépendre de Firefox pour du contenu public.
         {
             **base_opts,
             "extract_flat": True,
         },
-        # 2) Si on a déjà un fichier de cookies fourni par l'utilisateur
-        #    (suite à une erreur "playlist_private" précédente), on
-        #    retente avec.
+        # 2) Cookies AUTOMATIQUES depuis Firefox — utile pour TES
+        #    propres playlists privées si tu es connecté à YouTube
+        #    dans Firefox. On l'essaie seulement en 2e position (pas
+        #    en 1er) : si Firefox n'est pas installé ou son profil
+        #    inaccessible, ça échoue silencieusement ici et on
+        #    continue vers la stratégie suivante, au lieu de faire
+        #    planter TOUTE récupération (c'était le bug précédent).
+        {
+            **base_opts,
+            "extract_flat": True,
+            "cookiesfrombrowser": ("firefox",),
+        },
+        # 3) Cookies MANUELS (cookies.txt fourni par l'utilisateur via
+        #    le popup), si on en a déjà un suite à une demande
+        #    précédente dans cette session.
         {
             **base_opts,
             "extract_flat": False,
             "cookiefile": cookies_path,
         } if cookies_path else None,
     ]
+
+    # Si au moins une tentative échoue avec une erreur qui ressemble à
+    # un besoin d'authentification, on le retient pour, au pire, guider
+    # l'utilisateur vers le popup de cookies manuel à la fin.
+    needs_cookies = False
 
     for ydl_opts in filter(None, strategies):
         try:
@@ -93,8 +103,16 @@ def extract_playlist_entries(url, cookies_path=None):
 
         except Exception as e:
             msg = str(e).lower()
-            if any(k in msg for k in ("private", "sign in", "login", "cookies")):
-                raise VideoInfoFetchError("playlist_private")
+            # ⚠️ "403 Forbidden" est ajouté ici : YouTube renvoie ça
+            # pour une playlist privée sans authentification, mais ça
+            # ne contient ni "private" ni "sign in" — sans ce mot-clé,
+            # l'erreur passait inaperçue et on tombait direct sur le
+            # message générique "fetching_impossible".
+            if any(k in msg for k in ("private", "sign in", "login", "cookies", "forbidden", "403")):
+                needs_cookies = True
             continue
+
+    if needs_cookies:
+        raise VideoInfoFetchError("playlist_private")
 
     raise VideoInfoFetchError("fetching_impossible")

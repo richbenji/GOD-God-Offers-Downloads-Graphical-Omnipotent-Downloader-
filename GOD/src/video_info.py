@@ -2,6 +2,7 @@ import yt_dlp
 from tabulate import tabulate
 from .errors import InvalidURLError, VideoInfoFetchError
 from .utils import format_bytes_iec
+from .yt_dlp_helpers import extract_info_with_fallback, is_auth_error
 
 
 
@@ -29,7 +30,7 @@ class VideoInfo:
             raise InvalidURLError()
 
         try:
-            ydl_opts = {
+            base_opts = {
                 "quiet": True,
                 "no_warnings": True,
                 "skip_download": True,
@@ -50,45 +51,44 @@ class VideoInfo:
                 # maintenue à jour par les devs de yt-dlp ; un client
                 # codé en dur ici deviendrait vite obsolète.
             }
-            if cookies_path:
-                # Nécessaire pour les vidéos privées, non répertoriées,
-                # ou avec restriction d'âge ("Sign in to confirm your age").
-                ydl_opts["cookiefile"] = cookies_path
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.url, download=False)
+            # Essaie sans cookies (ou avec cookies manuels si déjà
+            # fournis), PUIS avec cookies Firefox automatiques en
+            # fallback — nécessaire pour les vidéos privées, non
+            # répertoriées, ou avec restriction d'âge
+            # ("Sign in to confirm your age").
+            info = extract_info_with_fallback(self.url, base_opts, cookies_path=cookies_path)
 
-                # Infos générales
-                self.title = info.get("title", "Unknown Title")
-                self.uploader = info.get("uploader", "")
-                self.video_id = info.get("id", "")
-                self.upload_date = info.get("upload_date", "")
-                self.view_count = info.get("view_count", 0)
-                self.like_count = info.get("like_count", 0)
-                self.description = info.get("description", "")
-                self.duration = info.get("duration", 0)
-                self.thumbnail = info.get("thumbnail", "")
-                self.formats = info.get("formats", [])
+            # Infos générales
+            self.title = info.get("title", "Unknown Title")
+            self.uploader = info.get("uploader", "")
+            self.video_id = info.get("id", "")
+            self.upload_date = info.get("upload_date", "")
+            self.view_count = info.get("view_count", 0)
+            self.like_count = info.get("like_count", 0)
+            self.description = info.get("description", "")
+            self.duration = info.get("duration", 0)
+            self.thumbnail = info.get("thumbnail", "")
+            self.formats = info.get("formats", [])
 
-                # Résolutions disponibles
-                video_formats = [f for f in self.formats if f.get("ext") == "mp4" and f.get("height") is not None]
-                resolutions = {f"{f['height']}p" for f in video_formats if f.get("height")}
-                self.resolutions = sorted(resolutions, key=lambda x: int(x[:-1]), reverse=True)
+            # Résolutions disponibles
+            video_formats = [f for f in self.formats if f.get("ext") == "mp4" and f.get("height") is not None]
+            resolutions = {f"{f['height']}p" for f in video_formats if f.get("height")}
+            self.resolutions = sorted(resolutions, key=lambda x: int(x[:-1]), reverse=True)
 
-                # Bitrates audio réels
-                audio_formats = [f for f in self.formats if f.get("acodec") != "none" and f.get("abr")]
-                bitrates = {round(f["abr"]) for f in audio_formats if f.get("abr")}
-                self.audio_bitrates = sorted(bitrates, reverse=True)
+            # Bitrates audio réels
+            audio_formats = [f for f in self.formats if f.get("acodec") != "none" and f.get("abr")]
+            bitrates = {round(f["abr"]) for f in audio_formats if f.get("abr")}
+            self.audio_bitrates = sorted(bitrates, reverse=True)
 
-                self.is_valid = True
-                return True
+            self.is_valid = True
+            return True
         except Exception as e:
-            msg = str(e).lower()
             # Vidéo privée, non répertoriée, ou avec restriction d'âge :
             # on réutilise la même clé "playlist_private" que pour les
             # playlists, ce qui déclenche déjà le popup de demande de
             # cookies existant côté UI.
-            if any(k in msg for k in ("sign in", "age", "private", "login", "cookies")):
+            if is_auth_error(e):
                 raise VideoInfoFetchError("playlist_private") from e
             raise VideoInfoFetchError("fetching_impossible") from e
 

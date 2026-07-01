@@ -6,6 +6,7 @@ import yt_dlp
 from .video_info import VideoInfo
 from .translations import get_text
 from .errors import VideoInfoFetchError
+from .yt_dlp_helpers import extract_info_with_fallback, download_with_fallback
 
 # ------------ Exception spéciale pour une annulation propre ------------
 class DownloadCancelled(Exception):
@@ -182,15 +183,12 @@ class DownloadThread(threading.Thread):
                 'ignore_no_formats_error': True,
                 'extractor_args': YOUTUBE_EXTRACTOR_ARGS,
             }
-            if self.cookies_path:
-                title_fetch_opts['cookiefile'] = self.cookies_path
 
-            with yt_dlp.YoutubeDL(title_fetch_opts) as ydl:
-                info = ydl.extract_info(self.url, download=False)
-                title = info.get('title', 'video')
-                ext = 'mp4' if self.download_type == 'video' else ('mp3' if self.audio_format == 'mp3' else 'm4a')
+            info = extract_info_with_fallback(self.url, title_fetch_opts, cookies_path=self.cookies_path)
+            title = info.get('title', 'video')
+            ext = 'mp4' if self.download_type == 'video' else ('mp3' if self.audio_format == 'mp3' else 'm4a')
 
-                unique_title = self.get_unique_basename(title, ext)
+            unique_title = self.get_unique_basename(title, ext)
 
             # Déterminer l'extension et générer un nom unique
             ext = 'mp4' if self.download_type == 'video' else ('mp3' if self.audio_format == 'mp3' else 'm4a')
@@ -272,12 +270,11 @@ class DownloadThread(threading.Thread):
                     }
 
             # ---------- Téléchargement ----------
-            if self.cookies_path:
-                ydl_opts['cookiefile'] = self.cookies_path
-
-            # Lancement réel du téléchargement
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([self.url])
+            # Essaie sans cookies (ou avec cookies manuels si déjà
+            # fournis), PUIS avec cookies Firefox automatiques en
+            # fallback si le premier essai échoue pour une raison
+            # d'authentification (vidéo privée / restriction d'âge).
+            download_with_fallback(self.url, ydl_opts, cookies_path=self.cookies_path)
 
             if self.status_callback:
                 self.status_callback(get_text("download_complete", self.app.current_language))
@@ -381,21 +378,18 @@ class BatchDownloadThread(threading.Thread):
                 'ignore_no_formats_error': True,
                 'extractor_args': YOUTUBE_EXTRACTOR_ARGS,
             }
-            if self.cookies_path:
-                title_fetch_opts['cookiefile'] = self.cookies_path
 
-            with yt_dlp.YoutubeDL(title_fetch_opts) as ydl:
-                for url in self.urls:
-                    url = url.strip()
-                    if not url:
-                        titles.append("video")
-                        continue
+            for url in self.urls:
+                url = url.strip()
+                if not url:
+                    titles.append("video")
+                    continue
 
-                    try:
-                        info = ydl.extract_info(url, download=False)
-                        titles.append(info.get("title", "video"))
-                    except Exception:
-                        titles.append("video")
+                try:
+                    info = extract_info_with_fallback(url, title_fetch_opts, cookies_path=self.cookies_path)
+                    titles.append(info.get("title", "video"))
+                except Exception:
+                    titles.append("video")
 
             # ==========================================================
             # 🆕 2. DÉTECTION DES DOUBLONS
@@ -557,27 +551,25 @@ class BatchDownloadThread(threading.Thread):
                 # --------------------------------------------------
                 # TÉLÉCHARGEMENT
                 # --------------------------------------------------
-                if self.cookies_path:
-                    ydl_opts["cookiefile"] = self.cookies_path
 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # Récupérer le titre de la vidéo avant téléchargement
-                    try:
-                        info = ydl.extract_info(url, download=False)
-                        video_title_ref[0] = info.get("title", "Titre inconnu")
-                    except Exception:
-                        video_title_ref[0] = "Titre inconnu"
+                # Récupérer le titre de la vidéo avant téléchargement
+                try:
+                    info = extract_info_with_fallback(url, ydl_opts, cookies_path=self.cookies_path)
+                    video_title_ref[0] = info.get("title", "Titre inconnu")
+                except Exception:
+                    video_title_ref[0] = "Titre inconnu"
 
-                    # Mettre à jour le statut avec le format 3 lignes
-                    if self.status_callback:
-                        self.status_callback(
-                            f"Vidéo {video_index} / {self._total_urls}\n"
-                            f"{video_title_ref[0]}\n"
-                            f"{get_text('downloading', self.app.current_language)}..."
-                        )
+                # Mettre à jour le statut avec le format 3 lignes
+                if self.status_callback:
+                    self.status_callback(
+                        f"Vidéo {video_index} / {self._total_urls}\n"
+                        f"{video_title_ref[0]}\n"
+                        f"{get_text('downloading', self.app.current_language)}..."
+                    )
 
-                    # Maintenant télécharger pour de vrai
-                    ydl.download([url])
+                # Maintenant télécharger pour de vrai (avec le même
+                # fallback Firefox automatique en cas de besoin)
+                download_with_fallback(url, ydl_opts, cookies_path=self.cookies_path)
 
                 successful += 1
 

@@ -365,6 +365,7 @@ class BatchDownloadThread(threading.Thread):
     # ------------------------------------------------------------------
     def run(self):
         successful = 0
+        failed_downloads = []
 
         try:
             # ==========================================================
@@ -428,150 +429,164 @@ class BatchDownloadThread(threading.Thread):
 
                 # Variables pour ce téléchargement
                 video_index = i + 1
-                video_title_ref = ["Chargement..."]
+                video_title_ref = [titles[i] if i < len(titles) else "video"]
+                forced_title = final_titles[i] if i < len(final_titles) else "video"
 
-                # NOM FORCÉ
-                forced_title = final_titles[i]
+                try:
 
-                # Statut initial
-                if self.status_callback:
-                    self.status_callback(
-                        f"{get_text('checking_url', self.app.current_language)} "
-                        f"({video_index}/{self._total_urls})"
-                    )
-
-                base_percent = (i * 100) / self._total_urls
-
-                # Hook spécifique à cette vidéo
-                progress_hook = self._progress_hook_factory(
-                    base_percent,
-                    video_index,
-                    video_title_ref
-                )
-
-                # --------------------------------------------------
-                # OPTIONS yt-dlp
-                # --------------------------------------------------
-                # ⚠️ IMPORTANT : depuis le passage de YouTube au "SABR
-                # streaming", les filtres durs [ext=mp4]/[ext=m4a]
-                # provoquent souvent "Requested format is not available"
-                # car certaines vidéos n'exposent plus ces flux pour le
-                # client web. On utilise désormais "format_sort" pour
-                # *préférer* mp4/m4a sans les exiger, avec un vrai
-                # fallback "/best". Le merge_output_format='mp4' se
-                # charge ensuite du remux/transcodage final via ffmpeg.
-
-                if self.download_type == "video":
-
-                    # CAS 1 — Best format (comme single tab)
-                    if self.resolution == "Best":
-                        ydl_opts = {
-                            "format": "bestvideo+bestaudio/best",
-                            "format_sort": ["res", "ext:mp4:m4a"],
-                            "outtmpl": os.path.join(
-                                self.output_path,
-                                f"{forced_title}.%(ext)s"
-                            ),
-                            "progress_hooks": [progress_hook],
-                            "quiet": True,
-                            "no_warnings": True,
-                            "merge_output_format": "mp4",
-                            "nooverwrites": True,
-                            "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
-                        }
-
-                    # CAS 2 — Résolution contrôlée
-                    else:
-                        height = (
-                            self.resolution[:-1]
-                            if self.resolution.endswith("p")
-                            else None
+                    # Statut initial
+                    if self.status_callback:
+                        self.status_callback(
+                            f"{get_text('checking_url', self.app.current_language)} "
+                            f"({video_index}/{self._total_urls})"
                         )
 
-                        format_str = "bestvideo"
-                        if height:
-                            format_str = f"bestvideo[height<={height}]"
+                    base_percent = (i * 100) / self._total_urls
 
-                        if self.bitrate and self.bitrate != "Best":
-                            br = self.bitrate.replace(" kbps", "")
-                            format_str += (
-                                f"+bestaudio[abr>={int(br) - 10}]"
-                                f"[abr<={int(br) + 10}]"
-                            )
+                    # Hook spécifique à cette vidéo
+                    progress_hook = self._progress_hook_factory(
+                        base_percent,
+                        video_index,
+                        video_title_ref
+                    )
+
+                    # --------------------------------------------------
+                    # OPTIONS yt-dlp
+                    # --------------------------------------------------
+                    # ⚠️ IMPORTANT : depuis le passage de YouTube au "SABR
+                    # streaming", les filtres durs [ext=mp4]/[ext=m4a]
+                    # provoquent souvent "Requested format is not available"
+                    # car certaines vidéos n'exposent plus ces flux pour le
+                    # client web. On utilise désormais "format_sort" pour
+                    # *préférer* mp4/m4a sans les exiger, avec un vrai
+                    # fallback "/best". Le merge_output_format='mp4' se
+                    # charge ensuite du remux/transcodage final via ffmpeg.
+
+                    if self.download_type == "video":
+
+                        # CAS 1 — Best format (comme single tab)
+                        if self.resolution == "Best":
+                            ydl_opts = {
+                                "format": "bestvideo+bestaudio/best",
+                                "format_sort": ["res", "ext:mp4:m4a"],
+                                "outtmpl": os.path.join(
+                                    self.output_path,
+                                    f"{forced_title}.%(ext)s"
+                                ),
+                                "progress_hooks": [progress_hook],
+                                "quiet": True,
+                                "no_warnings": True,
+                                "merge_output_format": "mp4",
+                                "nooverwrites": True,
+                                "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
+                            }
+
+                        # CAS 2 — Résolution contrôlée
                         else:
-                            format_str += "+bestaudio"
+                            height = (
+                                self.resolution[:-1]
+                                if self.resolution.endswith("p")
+                                else None
+                            )
 
-                        # Fallback : si la combinaison vidéo+audio filtrée
-                        # n'existe pas, on retombe sur un "best" respectant
-                        # au moins la hauteur, puis sur "best" tout court.
-                        fallback = f"best[height<={height}]" if height else "best"
-                        format_str += f"/{fallback}/best"
+                            format_str = "bestvideo"
+                            if height:
+                                format_str = f"bestvideo[height<={height}]"
+
+                            if self.bitrate and self.bitrate != "Best":
+                                br = self.bitrate.replace(" kbps", "")
+                                format_str += (
+                                    f"+bestaudio[abr>={int(br) - 10}]"
+                                    f"[abr<={int(br) + 10}]"
+                                )
+                            else:
+                                format_str += "+bestaudio"
+
+                            # Fallback : si la combinaison vidéo+audio filtrée
+                            # n'existe pas, on retombe sur un "best" respectant
+                            # au moins la hauteur, puis sur "best" tout court.
+                            fallback = f"best[height<={height}]" if height else "best"
+                            format_str += f"/{fallback}/best"
+
+                            ydl_opts = {
+                                "format": format_str,
+                                "format_sort": ["res", "ext:mp4:m4a"],
+                                "outtmpl": os.path.join(
+                                    self.output_path,
+                                    f"{forced_title}.%(ext)s"
+                                ),
+                                "progress_hooks": [progress_hook],
+                                "quiet": True,
+                                "no_warnings": True,
+                                "merge_output_format": "mp4",
+                                "nooverwrites": True,
+                                "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
+                            }
+
+                    else:
+                        preferred_quality = (
+                            self.bitrate.replace(" kbps", "")
+                            if (self.bitrate and self.bitrate != "Best")
+                            else "192"
+                        )
 
                         ydl_opts = {
-                            "format": format_str,
-                            "format_sort": ["res", "ext:mp4:m4a"],
+                            "format": "bestaudio/best",
+                            "format_sort": ["ext:m4a:mp3"],
                             "outtmpl": os.path.join(
                                 self.output_path,
                                 f"{forced_title}.%(ext)s"
                             ),
                             "progress_hooks": [progress_hook],
+                            "postprocessors": [{
+                                "key": "FFmpegExtractAudio",
+                                "preferredcodec": "mp3",
+                                "preferredquality": preferred_quality,
+                            }],
                             "quiet": True,
                             "no_warnings": True,
-                            "merge_output_format": "mp4",
                             "nooverwrites": True,
                             "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
                         }
 
-                else:
-                    preferred_quality = (
-                        self.bitrate.replace(" kbps", "")
-                        if (self.bitrate and self.bitrate != "Best")
-                        else "192"
-                    )
+                    # --------------------------------------------------
+                    # TÉLÉCHARGEMENT
+                    # --------------------------------------------------
 
-                    ydl_opts = {
-                        "format": "bestaudio/best",
-                        "format_sort": ["ext:m4a:mp3"],
-                        "outtmpl": os.path.join(
-                            self.output_path,
-                            f"{forced_title}.%(ext)s"
-                        ),
-                        "progress_hooks": [progress_hook],
-                        "postprocessors": [{
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": "mp3",
-                            "preferredquality": preferred_quality,
-                        }],
-                        "quiet": True,
-                        "no_warnings": True,
-                        "nooverwrites": True,
-                        "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
-                    }
+                    # Récupérer le titre de la vidéo avant téléchargement
+                    try:
+                        info = extract_info_with_fallback(url, ydl_opts, cookies_path=self.cookies_path)
+                        video_title_ref[0] = info.get("title", "Titre inconnu")
+                    except Exception:
+                        video_title_ref[0] = "Titre inconnu"
 
-                # --------------------------------------------------
-                # TÉLÉCHARGEMENT
-                # --------------------------------------------------
+                    # Mettre à jour le statut avec le format 3 lignes
+                    if self.status_callback:
+                        self.status_callback(
+                            f"Vidéo {video_index} / {self._total_urls}\n"
+                            f"{video_title_ref[0]}\n"
+                            f"{get_text('downloading', self.app.current_language)}..."
+                        )
 
-                # Récupérer le titre de la vidéo avant téléchargement
-                try:
-                    info = extract_info_with_fallback(url, ydl_opts, cookies_path=self.cookies_path)
-                    video_title_ref[0] = info.get("title", "Titre inconnu")
-                except Exception:
-                    video_title_ref[0] = "Titre inconnu"
+                    # Maintenant télécharger pour de vrai (avec le même
+                    # fallback Firefox automatique en cas de besoin)
+                    download_with_fallback(url, ydl_opts, cookies_path=self.cookies_path)
 
-                # Mettre à jour le statut avec le format 3 lignes
-                if self.status_callback:
-                    self.status_callback(
-                        f"Vidéo {video_index} / {self._total_urls}\n"
-                        f"{video_title_ref[0]}\n"
-                        f"{get_text('downloading', self.app.current_language)}..."
-                    )
+                    successful += 1
+                except DownloadCancelled:
+                    raise
+                except Exception as e:
+                    # On mémorise le titre de la vidéo en échec et on continue le lot.
+                    failed_title = video_title_ref[0]
+                    if not failed_title or failed_title in ("Chargement...", "Titre inconnu", "video"):
+                        failed_title = titles[i] if i < len(titles) and titles[i] != "video" else url
+                    failed_downloads.append(failed_title)
 
-                # Maintenant télécharger pour de vrai (avec le même
-                # fallback Firefox automatique en cas de besoin)
-                download_with_fallback(url, ydl_opts, cookies_path=self.cookies_path)
-
-                successful += 1
+                    if self.status_callback:
+                        self.status_callback(
+                            f"{get_text('error_prefix', self.app.current_language)} "
+                            f"{failed_title}: {e}"
+                        )
 
             # --------------------------------------------------
             # FIN NORMALE
@@ -582,7 +597,7 @@ class BatchDownloadThread(threading.Thread):
                 )
 
             if self.finished_callback:
-                self.finished_callback(successful, self.total_count)
+                self.finished_callback(successful, self.total_count, failed_downloads)
 
             # ------------------------------------------------------
             # ANNULATION
@@ -593,7 +608,7 @@ class BatchDownloadThread(threading.Thread):
                     get_text("canceling_batch_download", self.app.current_language)
                 )
             if self.finished_callback:
-                self.finished_callback(successful, self.total_count)
+                self.finished_callback(successful, self.total_count, failed_downloads)
 
             # ------------------------------------------------------
             # ERREUR RÉELLE
@@ -604,7 +619,7 @@ class BatchDownloadThread(threading.Thread):
                     f"{get_text('error_prefix', self.app.current_language)} {e}"
                 )
             if self.finished_callback:
-                self.finished_callback(successful, self.total_count)
+                self.finished_callback(successful, self.total_count, failed_downloads)
 
     def cancel(self):
         self.is_cancelled = True

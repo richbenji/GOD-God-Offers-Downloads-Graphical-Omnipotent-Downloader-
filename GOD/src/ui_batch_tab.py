@@ -17,6 +17,7 @@ class BatchDownloadTab:
         # Comptage
         self._batch_success_count = 0
         self._batch_total_count = 0
+        self._batch_failed_downloads = []
 
         # Distinguer fin normale vs annulation utilisateur
         self._batch_was_cancelled = False
@@ -228,8 +229,8 @@ class BatchDownloadTab:
             ),
 
             # Fin du batch → succès / total
-            finished_callback=lambda success_count, total_count: self.app.after(
-                0, lambda: self.download_finished(success_count, total_count)
+            finished_callback=lambda success_count, total_count, failed_downloads: self.app.after(
+                0, lambda: self.download_finished(success_count, total_count, failed_downloads)
             )
         )
 
@@ -246,8 +247,9 @@ class BatchDownloadTab:
         if self.batch_download_thread:
             self.batch_download_thread.cancel()
 
-    def download_finished(self, success_count, total_count):
+    def download_finished(self, success_count, total_count, failed_downloads=None):
         self.is_downloading = False
+        self._batch_failed_downloads = list(failed_downloads or [])
 
         # Ratio traduit
         ratio_key = (
@@ -273,6 +275,9 @@ class BatchDownloadTab:
                 f"{get_text('partial_download_message', self.app.current_language)}.\n\n"
                 f"{downloads_status}"
             )
+            if self._batch_failed_downloads:
+                failed_list = "\n".join(f"• {name}" for name in self._batch_failed_downloads)
+                message += f"\n\n{get_text('download_failed', self.app.current_language)} :\n{failed_list}"
             messagebox.showinfo(title, message)
 
             self._batch_was_cancelled = False
@@ -291,6 +296,9 @@ class BatchDownloadTab:
                     f"{get_text('partial_download_message', self.app.current_language)}\n\n"
                     f"{downloads_status}"
                 )
+                if self._batch_failed_downloads:
+                    failed_list = "\n".join(f"• {name}" for name in self._batch_failed_downloads)
+                    message += f"\n\n{get_text('download_failed', self.app.current_language)} :\n{failed_list}"
                 messagebox.showwarning(title, message)
 
         # -------- reset UI --------

@@ -685,6 +685,7 @@ class SingleDownloadTab:
         self.placeholder_label = None  # label par défaut
         self.is_downloading = False  # 🔑 nouvel état
         self._download_results = []  # liste de True / False
+        self._failed_downloads = []  # titres des vidéos dont le téléchargement a échoué
         self._expected_threads = 0  # Total à télécharger
         self._finished_threads = 0  # terminés
         self.playlist_loading_frame = None
@@ -1190,6 +1191,7 @@ class SingleDownloadTab:
         """Démarre tous les téléchargements et transforme le bouton en 'Annuler'."""
 
         self._download_results.clear()
+        self._failed_downloads.clear()
 
         if not self.video_frames:
             return
@@ -1250,9 +1252,12 @@ class SingleDownloadTab:
 
                 return _status
 
-            def make_finished_cb(tref):
+            def make_finished_cb(tref, video_title):
                 return lambda success: self.app.after(
-                    0, lambda: self._on_thread_finished(tref.get('t'), success)
+                    0,
+                    lambda: self._on_thread_finished(
+                        tref.get('t'), success, video_title
+                    )
                 )
 
             thread = DownloadThread(
@@ -1269,7 +1274,7 @@ class SingleDownloadTab:
                     total_videos,
                     opts["title"]
                 ),
-                finished_callback=make_finished_cb(tref),
+                finished_callback=make_finished_cb(tref, opts["title"]),
                 cookies_path=self.app.cookies_path
             )
 
@@ -1355,11 +1360,13 @@ class SingleDownloadTab:
 
         self.single_progress_bar.set(avg / 100.0)  # Calcule la moyenne
 
-    def _on_thread_finished(self, thread, success):
+    def _on_thread_finished(self, thread, success, video_title):
         if not self.is_downloading:
             return  # ⛔ thread terminé après annulation → on ignore
 
         self._download_results.append(success)
+        if not success:
+            self._failed_downloads.append(video_title or "Titre inconnu")
         self._thread_progress[thread] = 100
         self.clear_queue_btn.configure(state="normal" if self.video_frames else "disabled")
 
@@ -1407,9 +1414,14 @@ class SingleDownloadTab:
 
             else:
                 title = get_text("download_failed", self.app.current_language)
+                failed_list = "\n".join(
+                    f"• {video_title}" for video_title in self._failed_downloads
+                )
                 message = (
                     f"{get_text('partial_download_message', self.app.current_language)}\n\n"
-                    f"{downloads_status}"
+                    f"{downloads_status}\n\n"
+                    f"{get_text('download_failed', self.app.current_language)} :\n"
+                    f"{failed_list}"
                 )
                 messagebox.showwarning(title, message)
 
@@ -1423,6 +1435,7 @@ class SingleDownloadTab:
 
             # Reset pour le prochain batch
             self._download_results.clear()
+            self._failed_downloads.clear()
             self._thread_progress.clear()
             self._expected_threads = 0
 

@@ -2,8 +2,7 @@ import yt_dlp
 from tabulate import tabulate
 from .errors import InvalidURLError, VideoInfoFetchError
 from .utils import format_bytes_iec
-from .yt_dlp_helpers import extract_info_with_fallback, is_auth_error
-
+from .yt_dlp_helpers import extract_info_with_fallback, is_auth_error, NoFormatsError
 
 
 class VideoInfo:
@@ -31,8 +30,8 @@ class VideoInfo:
 
         try:
             base_opts = {
-                "quiet": True,
-                "no_warnings": True,
+                #"quiet": True,
+                #"no_warnings": True,
                 "skip_download": True,
                 # ⚠️ IMPORTANT : même avec skip_download=True, yt-dlp
                 # résout un format en interne avant de retourner les
@@ -57,8 +56,9 @@ class VideoInfo:
             # fallback — nécessaire pour les vidéos privées, non
             # répertoriées, ou avec restriction d'âge
             # ("Sign in to confirm your age").
-            info = extract_info_with_fallback(self.url, base_opts, cookies_path=cookies_path)
-
+            info = extract_info_with_fallback(
+                self.url, base_opts, cookies_path=cookies_path, require_formats=True
+            )
             # Infos générales
             self.title = info.get("title", "Unknown Title")
             self.uploader = info.get("uploader", "")
@@ -83,6 +83,10 @@ class VideoInfo:
 
             self.is_valid = True
             return True
+
+        except NoFormatsError as e:
+            raise VideoInfoFetchError("playlist_private") from e
+
         except Exception as e:
             # Vidéo privée, non répertoriée, ou avec restriction d'âge :
             # on réutilise la même clé "playlist_private" que pour les

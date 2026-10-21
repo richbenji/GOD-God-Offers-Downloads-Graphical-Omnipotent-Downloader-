@@ -158,14 +158,14 @@ class YouTubeDownloader(ctk.CTk):
         self.tab_single = self.tabview.add(get_text("single_download_tab", self.current_language))
         self.tab_batch = self.tabview.add(get_text("batch_download_tab", self.current_language))
         self.tab_tutorial = self.tabview.add(get_text("tutorial", self.current_language))
-        self.tab_tutorialV2 = self.tabview.add("test")
+        #self.tab_tutorialV2 = self.tabview.add("test")
 
 
         # Injection des sous-interfaces
         self.single_tab_ui = SingleDownloadTab(self.tab_single, self)
         self.batch_tab_ui = BatchDownloadTab(self.tab_batch, self)
         self.tutorial_tab_ui = TutorialTab(self.tab_tutorial, self)
-        self.tutorial_tabV2_ui = TutorialTabV2(self.tab_tutorialV2, self)
+        #self.tutorial_tabV2_ui = TutorialTabV2(self.tab_tutorialV2, self)
 
     def toggle_theme(self):
         if self.theme_switch.get() == 1:
